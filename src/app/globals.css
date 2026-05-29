@@ -1,0 +1,250 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&display=swap');
+
+:root {
+  --font-inter: 'Inter', system-ui, sans-serif;
+  --font-plus-jakarta: 'Plus Jakarta Sans', system-ui, sans-serif;
+
+  /* Light theme (padrão: dark) */
+  --background: 222.2 84% 4.9%;
+  --foreground: 210 40% 98%;
+  --card: 222.2 84% 4.9%;
+  --card-foreground: 210 40% 98%;
+  --popover: 222.2 84% 4.9%;
+  --popover-foreground: 210 40% 98%;
+  --primary: 199 89% 48%;
+  --primary-foreground: 222.2 47.4% 11.2%;
+  --secondary: 217.2 32.6% 17.5%;
+  --secondary-foreground: 210 40% 98%;
+  --muted: 217.2 32.6% 17.5%;
+  --muted-foreground: 215 20.2% 65.1%;
+  --destructive: 0 62.8% 50.6%;
+  --destructive-foreground: 210 40% 98%;
+  --border: 217.2 32.6% 17.5%;
+  --input: 217.2 32.6% 17.5%;
+  --ring: 199 89% 48%;
+  --radius: 0.75rem;
+  --chart-1: 199 89% 48%;
+  --chart-2: 280 68% 60%;
+  --chart-3: 47 96% 53%;
+  --chart-4: 142 71% 45%;
+  --chart-5: 346 87% 61%;
+}
+
+.light {
+  --background: 0 0% 100%;
+  --foreground: 222.2 84% 4.9%;
+  --card: 0 0% 100%;
+  --card-foreground: 222.2 84% 4.9%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 222.2 84% 4.9%;
+  --primary: 199 89% 48%;
+  --primary-foreground: 210 40% 98%;
+  --secondary: 210 40% 96.1%;
+  --secondary-foreground: 222.2 47.4% 11.2%;
+  --muted: 210 40% 96.1%;
+  --muted-foreground: 215.4 16.3% 46.9%;
+  --destructive: 0 84.2% 60.2%;
+  --destructive-foreground: 210 40% 98%;
+  --border: 214.3 31.8% 91.4%;
+  --input: 214.3 31.8% 91.4%;
+  --ring: 199 89% 48%;
+}
+
+* {
+  border-color: hsl(var(--border));
+}
+
+html {
+  scroll-behavior: smooth;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  background-color: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-family: var(--font-inter);
+  font-feature-settings: "rlig" 1, "calt" 1;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overscroll-behavior-y: none;
+}
+
+/* Scrollbar premium */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground));
+}
+
+/* Seleção de texto */
+::selection {
+  background-color: hsl(var(--primary) / 0.3);
+  color: hsl(var(--foreground));
+}
+
+/* Focus outline acessível */
+:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+@layer components {
+  /* Card premium com glass effect */
+  .card-glass {
+    @apply bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl;
+  }
+
+  .card-solid {
+    @apply bg-slate-800/80 border border-slate-700/50 rounded-2xl;
+  }
+
+  /* Gradient text */
+  .text-gradient {
+    @apply bg-gradient-to-r from-brand-400 to-accent-400 bg-clip-text text-transparent;
+  }
+
+  .text-gradient-gold {
+    @apply bg-gradient-to-r from-yellow-400 to-orange-400 bg-clip-text text-transparent;
+  }
+
+  /* Botões */
+  .btn-primary {
+    @apply bg-gradient-to-r from-brand-500 to-brand-600 hover:from-brand-400 hover:to-brand-500
+           text-white font-semibold px-6 py-3 rounded-xl transition-all duration-200
+           shadow-lg shadow-brand-500/25 hover:shadow-brand-500/40 hover:-translate-y-0.5
+           active:translate-y-0 active:shadow-sm;
+  }
+
+  .btn-secondary {
+    @apply bg-slate-800 hover:bg-slate-700 border border-slate-700 hover:border-slate-600
+           text-slate-200 font-semibold px-6 py-3 rounded-xl transition-all duration-200;
+  }
+
+  .btn-ghost {
+    @apply hover:bg-white/10 text-slate-300 hover:text-white font-medium px-4 py-2
+           rounded-lg transition-all duration-150;
+  }
+
+  /* Input estilizado */
+  .input-field {
+    @apply bg-slate-800/50 border border-slate-700 focus:border-brand-500
+           text-white placeholder:text-slate-500 rounded-xl px-4 py-3 w-full
+           transition-colors duration-200 outline-none focus:ring-2 focus:ring-brand-500/20;
+  }
+
+  /* XP Badge */
+  .xp-badge {
+    @apply inline-flex items-center gap-1 bg-yellow-500/20 text-yellow-400
+           text-xs font-bold px-2 py-0.5 rounded-full;
+  }
+
+  /* Streak display */
+  .streak-display {
+    @apply inline-flex items-center gap-1.5 text-orange-400 font-bold;
+  }
+
+  /* Progress bar */
+  .progress-bar {
+    @apply h-2 bg-slate-800 rounded-full overflow-hidden;
+  }
+
+  .progress-bar-fill {
+    @apply h-full bg-gradient-to-r from-brand-500 to-brand-400 rounded-full
+           transition-all duration-700 ease-out;
+  }
+
+  /* Shimmer skeleton */
+  .skeleton {
+    @apply bg-gradient-to-r from-slate-800 via-slate-700 to-slate-800
+           bg-[length:200%_100%] animate-shimmer rounded-xl;
+  }
+
+  /* Glow effect */
+  .glow-brand {
+    @apply shadow-[0_0_30px_rgba(14,165,233,0.3)];
+  }
+
+  .glow-gold {
+    @apply shadow-[0_0_30px_rgba(245,158,11,0.3)];
+  }
+
+  /* Task card */
+  .task-card {
+    @apply card-solid p-6 hover:border-slate-600 transition-all duration-200 cursor-pointer
+           hover:shadow-xl hover:-translate-y-0.5;
+  }
+
+  /* Badge de conquista */
+  .achievement-badge {
+    @apply flex flex-col items-center gap-2 p-4 bg-slate-800/60 border border-slate-700
+           rounded-2xl hover:border-yellow-500/50 transition-all duration-200;
+  }
+}
+
+@layer utilities {
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .safe-top {
+    padding-top: env(safe-area-inset-top);
+  }
+  .safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .text-balance {
+    text-wrap: balance;
+  }
+}
+
+/* PWA splash screen */
+@media (display-mode: standalone) {
+  body {
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
+/* Animação de entrada das páginas */
+.page-enter {
+  animation: pageEnter 0.3s ease-out;
+}
+
+@keyframes pageEnter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Floating XP label */
+.xp-float {
+  animation: xpFloat 1.5s ease-out forwards;
+}
+
+@keyframes xpFloat {
+  0% { transform: translateY(0) scale(1); opacity: 1; }
+  100% { transform: translateY(-60px) scale(1.2); opacity: 0; }
+}
