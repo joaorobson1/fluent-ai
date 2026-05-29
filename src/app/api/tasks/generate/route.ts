@@ -1,17 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/server";
-import { generateDailyTasks, verifyMultipleChoiceTasks } from "@/lib/gemini/task-generator";
+import { generateDailyTasks } from "@/lib/gemini/task-generator";
 import type { GenerateTasksRequest } from "@/types";
+
+const ALLOWED_TYPES = new Set([
+  "traducao", "multipla_escolha", "complete_frase",
+  "montar_frase", "vocabulario", "missao_dia",
+]);
 
 export async function POST(req: NextRequest) {
   try {
     if (!process.env.GEMINI_API_KEY) {
-      console.error("[generate] GEMINI_API_KEY não configurada no .env.local");
       return NextResponse.json({ error: "Serviço de IA não configurado" }, { status: 503 });
     }
 
     const body: GenerateTasksRequest = await req.json();
-    const { userId, level, weakAreas, completedTaskTypes, preferredTopics, count = 7 } = body;
+    const { userId, level, weakAreas, preferredTopics, count = 7 } = body;
 
     if (!userId || !level) {
       return NextResponse.json({ error: "userId e level são obrigatórios" }, { status: 400 });
@@ -37,71 +41,39 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ message: "Tarefas já geradas hoje", tasks: existing });
     }
 
-    // Gerar novas tarefas com IA
+    // Gerar tarefas com a IA (já sanitizadas no task-generator)
     const generatedTasks = await generateDailyTasks({
       level,
       weakAreas: weakAreas ?? [],
-      completedTaskTypes: completedTaskTypes ?? [],
+      completedTaskTypes: [],
       preferredTopics: preferredTopics ?? [],
       count,
     });
 
-    // Calcular data de expiração (meia-noite)
-    const expiresAt = new Date(tomorrow);
-
     if (generatedTasks.length === 0) {
-      return NextResponse.json({ error: "Nenhuma tarefa gerada pela IA" }, { status: 500 });
+      return NextResponse.json({ error: "Nenhuma tarefa válida gerada" }, { status: 500 });
     }
 
-    // Verificação independente das multipla_escolha:
-    // Uma segunda chamada ao Gemini confirma qual opção é de fato correta,
-    // corrigindo erros factuais que a geração principal possa ter cometido.
-    const mcTasks = generatedTasks.filter((t) => t.type === "multipla_escolha");
-    if (mcTasks.length > 0) {
-      try {
-        const mcInputs = mcTasks.map((t) => {
-          const c = t.content as { question?: string; options?: string[] };
-          return { question: c?.question ?? "", options: c?.options ?? [] };
-        });
+    // Montar registros para inserção, com defaults seguros
+    const expiresAt = tomorrow.toISOString();
+    const tasksToInsert = generatedTasks.map((task, index) => {
+      const type = ALLOWED_TYPES.has(task.type ?? "") ? task.type! : "missao_dia";
 
-        const verified = await verifyMultipleChoiceTasks(mcInputs);
-
-        mcTasks.forEach((task, i) => {
-          const v = verified[i];
-          if (!v) return;
-          const c = task.content as { options?: string[]; correct_index?: number; correct_answer?: string };
-          if (!c.options) return;
-          // Garantir que correct_answer pertence ao array de opções
-          const safeIndex = v.correct_index >= 0 && v.correct_index < c.options.length
-            ? v.correct_index
-            : c.options.findIndex((o) => o === v.correct_answer);
-          if (safeIndex !== -1) {
-            c.correct_index  = safeIndex;
-            c.correct_answer = c.options[safeIndex];
-          }
-        });
-      } catch (err) {
-        // Verificação falhou — continua com dados gerados (melhor do que bloquear)
-        console.warn("[generate] verifyMultipleChoiceTasks falhou:", err);
-      }
-    }
-
-    // Salvar no banco
-    const tasksToInsert = generatedTasks.map((task, index) => ({
-      user_id: userId,
-      type: task.type ?? "multipla_escolha",
-      title: task.title ?? `Tarefa ${index + 1}`,
-      description: task.description ?? "",
-      content: task.content ?? {},
-      xp_reward: task.xp_reward ?? 10,
-      difficulty: task.difficulty ?? 1,
-      topic: task.topic ?? "general",
-      is_daily: true,
-      order_index: index,
-      expires_at: expiresAt.toISOString(),
-      // Primeira tarefa já desbloqueada, as demais desbloqueiam em sequência
-      unlocked_at: index === 0 ? new Date().toISOString() : null,
-    }));
+      return {
+        user_id:      userId,
+        type,
+        title:        (task.title ?? `Tarefa ${index + 1}`).slice(0, 100),
+        description:  (task.description ?? "").slice(0, 200),
+        content:      task.content ?? {},
+        xp_reward:    clamp(task.xp_reward ?? 10, 5, 50),
+        difficulty:   clamp(task.difficulty ?? 1, 1, 5),
+        topic:        task.topic ?? "grammar",
+        is_daily:     true,
+        order_index:  index,
+        expires_at:   expiresAt,
+        unlocked_at:  index === 0 ? new Date().toISOString() : null,
+      };
+    });
 
     const { data: inserted, error } = await supabase
       .from("tasks")
@@ -109,19 +81,19 @@ export async function POST(req: NextRequest) {
       .select();
 
     if (error) {
-      console.error("Erro ao inserir tarefas:", error);
+      console.error("[generate] insert error:", error);
       return NextResponse.json({ error: "Erro ao salvar tarefas" }, { status: 500 });
     }
 
     // Criar registros de progresso
-    if (inserted) {
-      const progressRecords = inserted.map((task) => ({
-        user_id: userId,
-        task_id: task.id,
-        status: "pendente",
-      }));
-
-      await supabase.from("task_progress").insert(progressRecords);
+    if (inserted && inserted.length > 0) {
+      await supabase.from("task_progress").insert(
+        inserted.map((t) => ({
+          user_id: userId,
+          task_id: t.id,
+          status: "pendente",
+        }))
+      );
     }
 
     return NextResponse.json({ tasks: inserted, count: inserted?.length ?? 0 });
@@ -129,8 +101,12 @@ export async function POST(req: NextRequest) {
     const msg = error instanceof Error ? error.message : String(error);
     console.error("[generate] erro:", msg);
     return NextResponse.json(
-      { error: process.env.NODE_ENV === "development" ? msg : "Erro interno do servidor" },
+      { error: process.env.NODE_ENV === "development" ? msg : "Erro ao gerar tarefas" },
       { status: 500 }
     );
   }
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, Math.round(value)));
 }

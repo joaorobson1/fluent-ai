@@ -1,37 +1,40 @@
 import { getModel } from "./client";
+import type { TaskType, UserLevel, Task } from "@/types";
+import {
+  validateMultipleChoiceContent,
+  validateTranslationContent,
+  validateSentenceBuilderContent,
+  normalizeOption,
+} from "@/lib/validation";
 
-// Remove code fences que o Gemini pode inserir ao redor do JSON
-// Ex: ```json\n{...}\n```  →  {...}
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
 function stripCodeFences(raw: string): string {
   return raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
 }
-import type { TaskType, UserLevel, Task } from "@/types";
 
-// ── Constantes compartilhadas ────────────────────────────────────────────────
+const getJsonModel = (temperature: number) => getModel({ temperature });
+
+// ── Constantes ────────────────────────────────────────────────────────────────
 
 const LEVEL_DESCRIPTIONS: Record<UserLevel, string> = {
-  zero:          "absolute beginner, knows no English at all",
-  iniciante:     "beginner, knows basic greetings and simple present tense",
-  intermediario: "intermediate, knows most tenses and common vocabulary",
-  avancado:      "advanced, can discuss complex topics with minor errors",
+  zero:          "absolute beginner (never studied English)",
+  iniciante:     "beginner (basic greetings, present simple, numbers)",
+  intermediario: "intermediate (all tenses, 2000+ vocabulary, can hold conversations)",
+  avancado:      "advanced (complex grammar, idioms, near-fluent)",
 };
 
 const TOPIC_PROMPTS: Record<string, string> = {
-  grammar:      "grammar rules, verb conjugation, tenses",
-  vocabulary:   "common words, expressions, idioms",
-  pronunciation:"phonetics, word stress, connected speech",
-  listening:    "comprehension, accent recognition",
-  conversation: "everyday dialogues, social situations",
-  business:     "professional English, emails, meetings",
-  travel:       "travel situations, asking for directions, hotels",
+  grammar:      "verb conjugation, tenses, sentence structure",
+  vocabulary:   "common words, collocations, phrasal verbs",
+  pronunciation: "word stress, phonetics",
+  listening:    "listening comprehension",
+  conversation: "everyday dialogues, greetings, small talk",
+  business:     "professional English, emails, presentations",
+  travel:       "directions, hotels, restaurants, transport",
 };
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-// Na API v1 não existe responseMimeType — JSON é garantido via instrução no prompt.
-const getJsonModel = (temperature: number) => getModel({ temperature });
-
-// ── generateDailyTasks ───────────────────────────────────────────────────────
+// ── generateDailyTasks ────────────────────────────────────────────────────────
 
 interface GenerationParams {
   level: UserLevel;
@@ -46,61 +49,155 @@ export async function generateDailyTasks(
 ): Promise<Partial<Task>[]> {
   const { level, weakAreas, preferredTopics, count } = params;
 
-  const taskTypes: TaskType[] = [
-    "traducao",
-    "multipla_escolha",
-    "complete_frase",
-    "montar_frase",
-    "vocabulario",
-    "missao_dia",
-  ];
-
-  const topics     = preferredTopics.length > 0 ? preferredTopics : ["grammar", "vocabulary"];
-  const focusAreas = weakAreas.length > 0
-    ? `Focus extra on these weak areas: ${weakAreas.join(", ")}.`
-    : "";
+  const topics = preferredTopics.length > 0 ? preferredTopics : ["grammar", "vocabulary"];
+  const topicStr = topics.map((t) => TOPIC_PROMPTS[t] || t).join(", ");
+  const focusStr = weakAreas.length > 0 ? `Prioritize: ${weakAreas.join(", ")}.` : "";
 
   const diffRange =
     level === "zero"          ? "1-2" :
     level === "iniciante"     ? "1-3" :
     level === "intermediario" ? "2-4" : "3-5";
 
-  const prompt = `IMPORTANT: Respond with raw JSON only. No markdown, no code fences, no explanation.
+  const prompt = `You are a professional English teacher creating exercises for Brazilian Portuguese speakers.
+Level: ${LEVEL_DESCRIPTIONS[level]}. Topics: ${topicStr}. ${focusStr}
 
-You are an English learning AI for Brazilian Portuguese speakers.
-Generate exactly ${count} diverse English learning tasks for a ${LEVEL_DESCRIPTIONS[level]} student.
-Topics to cover: ${topics.map(t => TOPIC_PROMPTS[t] || t).join(", ")}.
-${focusAreas}
+Generate exactly ${count} tasks. Respond with ONLY a JSON object — no markdown, no explanation, no code fences.
 
-Respond with a JSON object in this exact format:
-{"tasks": [ ...array of ${count} task objects... ]}
+FORMAT:
+{"tasks":[...${count} task objects...]}
 
-Each task object must have:
-- type: one of [${taskTypes.join(", ")}]
-- title: short task title in Portuguese
-- description: brief description in Portuguese (max 60 chars)
-- topic: the grammar/vocabulary topic covered
-- difficulty: integer 1-5 (use ${diffRange})
-- xp_reward: integer 10-30 based on difficulty
-- content: task-specific content object (see schema below)
+TASK TYPES allowed: traducao, multipla_escolha, complete_frase, montar_frase, vocabulario, missao_dia
+Distribute types evenly. Avoid repeating the same type consecutively.
 
-Content schema per type:
-- traducao: {"type":"traducao","text":"...","direction":"pt_to_en","accepted_answers":["..."],"hint":"...","explanation":"..."}
-- multipla_escolha: {"type":"multipla_escolha","question":"...","options":["optA","optB","optC","optD"],"correct_index":2,"correct_answer":"optC","explanation":"..."}
-  RULES for multipla_escolha:
-  * correct_index = 0-based position of the correct option in the options array (0=first, 1=second, 2=third, 3=fourth)
-  * correct_answer = EXACT text of the correct option (must match options[correct_index] exactly)
-  * Double-check: options[correct_index] === correct_answer before outputting
-- complete_frase: {"type":"complete_frase","sentence_with_blank":"___ is correct","options":["a","b","c","d"],"correct_answer":"a","full_sentence":"a is correct","explanation":"..."}
-- montar_frase: {"type":"montar_frase","words":["I","like","coffee"],"correct_order":[0,1,2],"translation":"Eu gosto de café"}
-- vocabulario: {"type":"vocabulario","words":[{"id":"","user_id":"","word":"hello","translation":"olá","pronunciation":"heh-LOH","example_sentence":"Hello, how are you?","difficulty":1,"tags":[],"times_seen":0,"times_correct":0,"mastery_level":0,"ease_factor":2.5,"interval_days":1,"is_mastered":false,"created_at":"","updated_at":""}],"quiz_mode":"flashcard"}
-- missao_dia: {"type":"missao_dia","mission":"...","steps":["step1","step2"],"xp_bonus":20}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SCHEMAS (use EXACT field names):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Make tasks engaging and culturally relevant to Brazilians. Vary the task types across the ${count} tasks.`;
+COMMON FIELDS (all tasks must have):
+{
+  "type": "<task_type>",
+  "title": "<short title in Portuguese, max 40 chars>",
+  "description": "<one line in Portuguese, max 60 chars>",
+  "topic": "<grammar|vocabulary|pronunciation|conversation|business|travel>",
+  "difficulty": <integer ${diffRange}>,
+  "xp_reward": <integer 10-30>,
+  "content": { ...see per-type schema below... }
+}
 
-  const model  = getJsonModel(0.8);
+━━ traducao ━━
+content = {
+  "type": "traducao",
+  "direction": "pt_to_en",
+  "text": "<Portuguese sentence to translate>",
+  "accepted_answers": ["<correct English translation>", "<alternative 1>", "<alternative 2>"],
+  "hint": "<optional grammar hint in Portuguese>",
+  "explanation": "<why this answer is correct, in Portuguese>"
+}
+RULES:
+• accepted_answers MUST have at least 2 variants (contractions, word order, synonyms)
+• text must be a natural, everyday sentence
+• For beginner: simple present/greetings; for intermediate+: varied tenses
+
+━━ multipla_escolha ━━
+content = {
+  "type": "multipla_escolha",
+  "question": "<question in Portuguese asking which English form is correct>",
+  "options": ["<option A>", "<option B>", "<option C>", "<option D>"],
+  "correct_index": <0-based integer — position of correct option in options array>,
+  "correct_answer": "<EXACT text of the correct option — must match options[correct_index] character by character>",
+  "explanation": "<grammar rule explanation in Portuguese>"
+}
+CRITICAL RULES for multipla_escolha:
+• Think step by step:
+  1. Write the question
+  2. Decide the CORRECT English answer
+  3. Write 3 WRONG but plausible answers (common mistakes Brazilians make)
+  4. Put all 4 answers in options[] — shuffle their order
+  5. Set correct_index = position of correct answer in options[] (0-based)
+  6. Set correct_answer = options[correct_index] (must match EXACTLY)
+• All 4 options must be DIFFERENT strings
+• The correct option must be UNAMBIGUOUSLY correct English
+• Wrong options must be realistic mistakes, not absurd
+• VERIFY before outputting: options[correct_index] === correct_answer
+
+━━ complete_frase ━━
+content = {
+  "type": "complete_frase",
+  "sentence_with_blank": "<sentence with BLANK where the answer goes>",
+  "options": ["<opt1>", "<opt2>", "<opt3>", "<opt4>"],
+  "correct_answer": "<the word/phrase that fills the blank — must be one of options exactly>",
+  "full_sentence": "<complete sentence with blank filled>",
+  "explanation": "<why this answer in Portuguese>"
+}
+RULES:
+• Use BLANK (all caps) to mark the blank
+• correct_answer must be exactly one of the options strings
+• Other options must be plausible wrong choices
+
+━━ montar_frase ━━
+content = {
+  "type": "montar_frase",
+  "words": ["word1", "word2", "word3", ...],
+  "correct_order": [<0-based indices in correct order>],
+  "translation": "<Portuguese translation of the complete sentence>",
+  "hint": "<optional tip in Portuguese>"
+}
+RULES:
+• words = individual words/tokens in SHUFFLED order (not the correct order)
+• correct_order = indices into words[] that form the correct English sentence
+• Example: words=["coffee","I","like"] → correct_order=[1,2,0] → "I like coffee"
+• 3-6 words total; use natural English sentences
+
+━━ vocabulario ━━
+content = {
+  "type": "vocabulario",
+  "quiz_mode": "flashcard",
+  "words": [
+    {
+      "id": "",
+      "user_id": "",
+      "word": "<English word>",
+      "translation": "<Portuguese translation>",
+      "pronunciation": "<phonetic spelling>",
+      "example_sentence": "<natural English example>",
+      "difficulty": <1-3>,
+      "tags": ["<category>"],
+      "times_seen": 0,
+      "times_correct": 0,
+      "mastery_level": 0,
+      "ease_factor": 2.5,
+      "interval_days": 1,
+      "is_mastered": false,
+      "created_at": "",
+      "updated_at": ""
+    }
+  ]
+}
+RULES: Include 3-5 thematically related words. Words must match the level.
+
+━━ missao_dia ━━
+content = {
+  "type": "missao_dia",
+  "mission": "<engaging mission description in Portuguese>",
+  "steps": ["<step 1>", "<step 2>", "<step 3>"],
+  "xp_bonus": 20
+}
+RULES: Make it a fun real-world challenge (speak English for 5 minutes, label objects in English, etc.)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+QUALITY CHECKLIST before outputting:
+• Each task teaches something clear and specific
+• No duplicate questions or options
+• Correct answers are unambiguously correct
+• Wrong answers are plausible common mistakes
+• multipla_escolha: verified options[correct_index] === correct_answer
+• montar_frase: correct_order indices are valid and form correct English
+• traducao: accepted_answers includes both formal and informal variants
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+
+  const model = getJsonModel(0.2); // baixa temperatura = maior precisão factual
   const result = await model.generateContent(prompt);
-  const raw    = stripCodeFences(result.response.text());
+  const raw = stripCodeFences(result.response.text());
 
   let tasks: Partial<Task>[] = [];
 
@@ -109,48 +206,173 @@ Make tasks engaging and culturally relevant to Brazilians. Vary the task types a
     if (Array.isArray(parsed.tasks)) {
       tasks = parsed.tasks as Partial<Task>[];
     } else {
+      // Fallback: encontrar o primeiro array no objeto
       const firstArray = Object.values(parsed).find(Array.isArray);
       if (firstArray) tasks = firstArray as Partial<Task>[];
     }
   } catch (err) {
-    console.error("[generateDailyTasks] parse error:", err, "raw:", raw.slice(0, 200));
+    console.error("[generateDailyTasks] parse error:", err, "\nraw preview:", raw.slice(0, 400));
+    throw new Error("Falha ao interpretar resposta da IA. Tente novamente.");
   }
 
   if (tasks.length === 0) {
-    throw new Error("Gemini não retornou tarefas válidas. Resposta: " + raw.slice(0, 300));
+    throw new Error("A IA não retornou tarefas válidas.");
   }
 
-  return tasks.slice(0, count);
+  // Sanitizar e validar cada tarefa
+  const sanitized = tasks
+    .slice(0, count)
+    .map(sanitizeTask)
+    .filter((t): t is Partial<Task> => t !== null);
+
+  if (sanitized.length === 0) {
+    throw new Error("Todas as tarefas geradas falharam na validação de esquema.");
+  }
+
+  return sanitized;
 }
 
-// ── verifyMultipleChoiceAnswer ───────────────────────────────────────────────
-// Chamada durante a VALIDAÇÃO da resposta do aluno.
-// Não confia no correct_index/correct_answer armazenado — pergunta diretamente
-// ao modelo qual é a resposta certa.
+// ── Sanitização pós-geração ───────────────────────────────────────────────────
 
-export async function verifyMultipleChoiceAnswer(
-  question: string,
-  options: string[],
-  selectedIndex: number
-): Promise<{ correct: boolean; correct_index: number; correct_answer: string; feedback: string }> {
-  const selected = options[selectedIndex] ?? "";
+function sanitizeTask(task: Partial<Task>): Partial<Task> | null {
+  if (!task.type || !task.content) return null;
 
-  const prompt = `You are an English language expert evaluating a multiple-choice exercise for Brazilian Portuguese speakers.
+  const content = task.content as Record<string, unknown>;
 
-Question: "${question}"
-Options: ${options.map((o, i) => `${i}="${o}"`).join(", ")}
-Student selected: option ${selectedIndex} = "${selected}"
+  switch (task.type) {
+    case "multipla_escolha":
+      return sanitizeMultipleChoice(task, content);
+    case "traducao":
+      return sanitizeTranslation(task, content);
+    case "montar_frase":
+      return sanitizeSentenceBuilder(task, content);
+    case "complete_frase":
+      return sanitizeCompleteFrase(task, content);
+    default:
+      return task;
+  }
+}
 
-Your task:
-1. Identify which option is the CORRECT English answer (grammar and meaning must be right)
-2. Determine if the student's selection is correct
+function sanitizeMultipleChoice(task: Partial<Task>, content: Record<string, unknown>): Partial<Task> | null {
+  const errors = validateMultipleChoiceContent(content);
 
-Rules:
-- Evaluate pure English correctness only
-- Return the 0-based index of the CORRECT option
+  // Tentar auto-corrigir: derivar correct_index a partir de correct_answer
+  if (errors.some((e) => e.field === "correct_index" || e.field === "correct_answer")) {
+    return null; // sem correct_answer confiável, descartar
+  }
 
-Respond with raw JSON only (no markdown):
-{"correct": <true|false>, "correct_index": <0-based int>, "correct_answer": "<exact option text>", "feedback": "<1 sentence in Portuguese explaining the rule>"}`;
+  const options = content.options as string[];
+  const correctAnswer = content.correct_answer as string;
+
+  // Remover opções duplicadas
+  const seen = new Set<string>();
+  const deduped = options.filter((o) => {
+    const norm = normalizeOption(o);
+    if (seen.has(norm)) return false;
+    seen.add(norm);
+    return true;
+  });
+
+  // Recalcular correct_index pelo texto (mais confiável que o índice da IA)
+  const realIndex = deduped.findIndex(
+    (o) => normalizeOption(o) === normalizeOption(correctAnswer)
+  );
+
+  if (realIndex === -1) {
+    // correct_answer não está nas opções — tarefa inválida
+    console.warn("[sanitize] multipla_escolha descartada: correct_answer não está nas opções", {
+      correct_answer: correctAnswer,
+      options: deduped,
+    });
+    return null;
+  }
+
+  return {
+    ...task,
+    content: {
+      ...content,
+      options: deduped,
+      correct_index: realIndex,
+      correct_answer: deduped[realIndex], // usar o texto exato da opção
+    },
+  };
+}
+
+function sanitizeTranslation(task: Partial<Task>, content: Record<string, unknown>): Partial<Task> | null {
+  const errors = validateTranslationContent(content);
+  if (errors.length > 0) {
+    console.warn("[sanitize] traducao inválida:", errors);
+    return null;
+  }
+
+  const answers = content.accepted_answers as string[];
+
+  // Garantir que a lista de respostas não tem duplicatas
+  const unique = [...new Set(answers.map((a) => a.trim()).filter(Boolean))];
+  if (unique.length === 0) return null;
+
+  return {
+    ...task,
+    content: { ...content, accepted_answers: unique },
+  };
+}
+
+function sanitizeSentenceBuilder(task: Partial<Task>, content: Record<string, unknown>): Partial<Task> | null {
+  const errors = validateSentenceBuilderContent(content);
+  if (errors.length > 0) {
+    console.warn("[sanitize] montar_frase inválida:", errors);
+    return null;
+  }
+  return task;
+}
+
+function sanitizeCompleteFrase(task: Partial<Task>, content: Record<string, unknown>): Partial<Task> | null {
+  if (!content.correct_answer || !Array.isArray(content.options)) return null;
+
+  const options = content.options as string[];
+  const correctAnswer = content.correct_answer as string;
+
+  // Verificar que correct_answer está nas opções
+  const found = options.some(
+    (o) => normalizeOption(o) === normalizeOption(correctAnswer)
+  );
+
+  if (!found) {
+    // Tentar adicionar correct_answer às opções se houver espaço
+    if (options.length < 4) {
+      return {
+        ...task,
+        content: { ...content, options: [...options, correctAnswer] },
+      };
+    }
+    console.warn("[sanitize] complete_frase descartada: correct_answer não nas opções");
+    return null;
+  }
+
+  return task;
+}
+
+// ── validateTranslation ───────────────────────────────────────────────────────
+
+export async function validateTranslation(
+  userAnswer: string,
+  acceptedAnswers: string[],
+  level: UserLevel
+): Promise<{ correct: boolean; score: number; feedback: string }> {
+  const prompt = `You are evaluating an English translation exercise for a Brazilian ${LEVEL_DESCRIPTIONS[level]} student.
+
+Accepted answers: ${acceptedAnswers.join(" | ")}
+Student's answer: "${userAnswer}"
+
+Evaluation criteria:
+- CORRECT if: same meaning, grammatically valid English, possibly different word order or minor phrasing variation
+- CORRECT if: contraction vs expanded form ("it's" = "it is")
+- CORRECT if: British vs American spelling ("colour" = "color")
+- PARTIALLY CORRECT (score 70-85) if: correct meaning but minor grammar error
+- INCORRECT if: wrong meaning or fundamentally wrong grammar
+
+Respond with raw JSON only:
+{"correct": <boolean>, "score": <0-100>, "feedback": "<one sentence in Portuguese — encouraging even when wrong>"}`;
 
   const model = getJsonModel(0.1);
   const result = await model.generateContent(prompt);
@@ -158,90 +380,25 @@ Respond with raw JSON only (no markdown):
   try {
     const parsed = JSON.parse(stripCodeFences(result.response.text())) as {
       correct?: boolean;
-      correct_index?: number;
-      correct_answer?: string;
+      score?: number;
       feedback?: string;
     };
+
+    // Se o score for alto (≥70), considerar correto mesmo que o boolean diga false
+    const score = typeof parsed.score === "number" ? parsed.score : 0;
+    const correct = parsed.correct === true || score >= 70;
+
     return {
-      correct:       parsed.correct       ?? false,
-      correct_index: parsed.correct_index ?? 0,
-      correct_answer: parsed.correct_answer ?? options[parsed.correct_index ?? 0] ?? "",
-      feedback:      parsed.feedback      ?? "",
+      correct,
+      score,
+      feedback: parsed.feedback ?? (correct ? "Muito bem!" : "Tente novamente."),
     };
   } catch {
-    // Fallback seguro: não punir o aluno se a IA falhar
-    return { correct: true, correct_index: selectedIndex, correct_answer: selected, feedback: "" };
+    return { correct: false, score: 0, feedback: "Não foi possível avaliar. Tente novamente." };
   }
 }
 
-// ── verifyMultipleChoiceTasks ────────────────────────────────────────────────
-// Verifica em lote qual opção é a correta para cada tarefa de múltipla escolha.
-// Chamada APÓS generateDailyTasks para corrigir erros factuais da IA.
-
-export async function verifyMultipleChoiceTasks(
-  tasks: Array<{ question: string; options: string[] }>
-): Promise<Array<{ correct_index: number; correct_answer: string }>> {
-  if (tasks.length === 0) return [];
-
-  const prompt = `You are an English grammar expert verifying multiple choice questions for Brazilian learners.
-For each question below, determine which option is the CORRECT English answer.
-
-${tasks.map((t, i) => `TASK ${i}:
-Question: "${t.question}"
-Options: ${t.options.map((o, j) => `${j}="${o}"`).join(", ")}`).join("\n\n")}
-
-Respond with raw JSON only (no markdown):
-{"results": [{"correct_index": <0-based int>, "correct_answer": "<exact option text>"}]}
-
-One result per task in the same order. correct_answer must be the EXACT text of the correct option.`;
-
-  const model  = getJsonModel(0.1);
-  const result = await model.generateContent(prompt);
-
-  try {
-    const parsed = JSON.parse(stripCodeFences(result.response.text())) as {
-      results?: Array<{ correct_index: number; correct_answer: string }>;
-    };
-    return parsed.results ?? [];
-  } catch {
-    return [];
-  }
-}
-
-// ── validateTranslation ──────────────────────────────────────────────────────
-
-export async function validateTranslation(
-  userAnswer: string,
-  acceptedAnswers: string[],
-  level: UserLevel
-): Promise<{ correct: boolean; score: number; feedback: string }> {
-  const prompt = `You are evaluating an English translation exercise for a Brazilian student (${LEVEL_DESCRIPTIONS[level]}).
-
-Accepted answers: ${acceptedAnswers.join(" | ")}
-Student's answer: "${userAnswer}"
-
-Evaluate if the answer is correct or acceptable. Consider:
-- Minor spelling mistakes (1 char) as correct for beginners
-- Alternative correct phrasings as correct
-- Completely wrong answers as incorrect
-
-Respond with raw JSON only, no markdown: {"correct": boolean, "score": 0-100, "feedback": "short feedback in Portuguese"}`;
-
-  const model  = getJsonModel(0.3);
-  const result = await model.generateContent(prompt);
-
-  try {
-    return JSON.parse(stripCodeFences(result.response.text()));
-  } catch {
-    return { correct: false, score: 0, feedback: "Não foi possível avaliar a resposta." };
-  }
-}
-
-// ── getAIConversationResponse ────────────────────────────────────────────────
-// Diferença Gemini vs OpenAI:
-// - Gemini não tem role "system" nas mensagens — usa systemInstruction no modelo
-// - Role "assistant" (OpenAI) → "model" (Gemini)
-// - Sempre precisa de pelo menos uma mensagem com role "user"
+// ── getAIConversationResponse ─────────────────────────────────────────────────
 
 export async function getAIConversationResponse(
   messages: { role: "user" | "assistant"; content: string }[],
@@ -249,55 +406,34 @@ export async function getAIConversationResponse(
   level: UserLevel
 ): Promise<string> {
   const systemInstruction = `You are an English conversation partner for a Brazilian student.
-Level: ${LEVEL_DESCRIPTIONS[level]}.
-Scenario: ${scenario}
+Level: ${LEVEL_DESCRIPTIONS[level]}. Scenario: ${scenario}
+Rules: respond ONLY in English, max 2-3 sentences, be encouraging, stay in character.`;
 
-Rules:
-- Respond ONLY in English
-- Keep responses concise (2-3 sentences max)
-- Naturally correct grammar mistakes by using correct forms in your response
-- Be encouraging and patient
-- Stay in character for the scenario`;
-
-  // Mapeia "assistant" → "model" para o formato do Gemini
   const contents = messages.map((m) => ({
-    role:  m.role === "assistant" ? "model" : "user",
+    role: m.role === "assistant" ? "model" : "user",
     parts: [{ text: m.content }],
   }));
 
-  // Garante que a conversa começa com "user" (requisito do Gemini)
-  const validContents =
-    contents.length > 0 && contents[0].role === "model"
-      ? contents.slice(1)
-      : contents;
+  const validContents = contents.length > 0 && contents[0].role === "model"
+    ? contents.slice(1)
+    : contents;
 
-  const model = getModel({
-    systemInstruction,
-    temperature:     0.7,
-  });
-
+  const model = getModel({ systemInstruction, temperature: 0.7 });
   const result = await model.generateContent({ contents: validContents });
-  return (
-    result.response.text() ||
-    "I'm sorry, I didn't understand. Could you repeat that?"
-  );
+  return result.response.text() || "Could you repeat that, please?";
 }
 
-// ── generateVocabularyExplanation ────────────────────────────────────────────
+// ── generateVocabularyExplanation ─────────────────────────────────────────────
 
 export async function generateVocabularyExplanation(
   word: string,
   level: UserLevel
 ): Promise<{ explanation: string; mnemonic: string; example: string }> {
   const prompt = `Explain the English word "${word}" for a Brazilian ${LEVEL_DESCRIPTIONS[level]} student.
-Respond with raw JSON only, no markdown:
-{
-  "explanation": "brief explanation in Portuguese",
-  "mnemonic": "memory trick connecting to Portuguese (max 30 words)",
-  "example": "simple example sentence in English"
-}`;
+Respond with raw JSON only:
+{"explanation":"<brief in Portuguese>","mnemonic":"<memory trick, max 25 words>","example":"<natural English sentence>"}`;
 
-  const model  = getJsonModel(0.5);
+  const model = getJsonModel(0.4);
   const result = await model.generateContent(prompt);
 
   try {
