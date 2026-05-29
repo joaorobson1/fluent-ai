@@ -352,6 +352,44 @@ function sanitizeCompleteFrase(task: Partial<Task>, content: Record<string, unkn
   return task;
 }
 
+// ── verifyWhichOptionIsCorrect ────────────────────────────────────────────────
+// Chamada UMA VEZ para tarefas antigas (sem correct_answer salvo).
+// Temperatura próxima de zero = resposta determinística para questões gramaticais.
+
+export async function verifyWhichOptionIsCorrect(
+  questionOrSentence: string,
+  options: string[]
+): Promise<{ correct_index: number; correct_answer: string }> {
+  if (options.length === 0) {
+    return { correct_index: 0, correct_answer: "" };
+  }
+
+  const optionsList = options.map((o, i) => `${i}: "${o}"`).join(", ");
+
+  const prompt = `You are an English grammar expert.
+Context for Brazilian learner: "${questionOrSentence}"
+Options: ${optionsList}
+
+Which option (0-based index) is the CORRECT English answer? Consider grammar, meaning, and context.
+Raw JSON only: {"correct_index": <integer 0-${options.length - 1}>, "correct_answer": "<exact text of that option>"}`;
+
+  const model = getModel({ temperature: 0.05 });
+  const result = await model.generateContent(prompt);
+
+  try {
+    const parsed = JSON.parse(stripCodeFences(result.response.text())) as {
+      correct_index?: number;
+      correct_answer?: string;
+    };
+
+    const idx = Math.max(0, Math.min(options.length - 1, Number(parsed.correct_index ?? 0)));
+    return { correct_index: idx, correct_answer: options[idx] ?? options[0] };
+  } catch {
+    // Fallback absoluto — não punir o aluno se a chamada falhar
+    return { correct_index: 0, correct_answer: options[0] };
+  }
+}
+
 // ── validateTranslation ───────────────────────────────────────────────────────
 
 export async function validateTranslation(

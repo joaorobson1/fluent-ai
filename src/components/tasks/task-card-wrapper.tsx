@@ -8,8 +8,10 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { TaskTranslation } from "./task-translation";
 import { TaskMultipleChoice } from "./task-multiple-choice";
+import { TaskCompleteFrase } from "./task-complete-frase";
 import { TaskSentenceBuilder } from "./task-sentence-builder";
 import { TaskAIConversation } from "./task-ai-conversation";
+import type { CompleteFraseContent } from "@/types";
 import type { Task } from "@/types";
 import { TASK_TYPE_ICONS, TASK_TYPE_LABELS, difficultyColor } from "@/lib/utils";
 import { cn } from "@/lib/utils";
@@ -121,14 +123,33 @@ export function TaskCardWrapper({
               onComplete={() => handleSubmit("completed")}
             />
           )}
-          {(task.type === "complete_frase" || task.type === "missao_dia" || task.type === "vocabulario" || task.type === "listening" || task.type === "pronuncia") && (
+          {task.type === "complete_frase" && (() => {
+            const cfContent = task.content as CompleteFraseContent;
+            // Se tem opções → componente interativo; caso contrário → marcar como feito
+            if (Array.isArray(cfContent?.options) && cfContent.options.length > 0) {
+              return (
+                <TaskCompleteFrase
+                  content={cfContent}
+                  onSubmit={handleSubmit}
+                />
+              );
+            }
+            return (
+              <div className="text-center py-8">
+                <p className="text-4xl mb-3">✏️</p>
+                <p className="font-semibold text-white mb-2">{task.title}</p>
+                <Button onClick={() => handleSubmit("skip")} variant="outline" className="gap-2">
+                  Marcar como feito <ChevronRight size={16} />
+                </Button>
+              </div>
+            );
+          })()}
+          {(task.type === "missao_dia" || task.type === "vocabulario" || task.type === "listening" || task.type === "pronuncia") && (
             <div className="text-center py-8">
               <p className="text-4xl mb-3">{TASK_TYPE_ICONS[task.type]}</p>
               <p className="font-semibold text-white mb-2">{task.title}</p>
               <p className="text-slate-400 text-sm mb-6">
-                {task.type === "missao_dia"
-                  ? "Complete o desafio do dia!"
-                  : "Exercício em desenvolvimento — volte em breve!"}
+                {task.type === "missao_dia" ? "Complete o desafio do dia!" : "Exercício em desenvolvimento — volte em breve!"}
               </p>
               <Button onClick={() => handleSubmit("skip")} variant="outline" className="gap-2">
                 Marcar como feito <ChevronRight size={16} />

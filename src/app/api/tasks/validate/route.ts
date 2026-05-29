@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/server";
-import { validateTranslation } from "@/lib/gemini/task-generator";
+import { validateTranslation, verifyWhichOptionIsCorrect } from "@/lib/gemini/task-generator";
 import { checkAnswer, checkMultipleChoice, normalizeOption } from "@/lib/validation";
 import type {
   TranslationContent,
@@ -98,35 +98,65 @@ export async function POST(req: NextRequest) {
         if (isNaN(selectedIdx) || selectedIdx < 0 || selectedIdx >= options.length) {
           correct = false;
           score = 0;
-          feedback = "Índice de resposta inválido.";
+          feedback = "Seleção inválida.";
           break;
         }
 
-        const selectedOption = options[selectedIdx] ?? "";
-        const correctAnswer = content.correct_answer ?? options[Number(content.correct_index)] ?? "";
+        const selectedOption = options[selectedIdx];
 
-        if (!correctAnswer) {
-          // Sem resposta correta armazenada — benefício da dúvida
-          correct = true;
-          score = 100;
-          feedback = "Resposta registrada! ✅";
-          break;
+        // ── Verificar se o correct_answer armazenado é confiável ─────────────
+        // Um correct_answer é "confiável" se:
+        //   (a) existe no banco como string não vazia, E
+        //   (b) corresponde a alguma das opções (com normalização)
+        const storedCA = content.correct_answer;
+        const hasReliableCA =
+          typeof storedCA === "string" &&
+          storedCA.trim() !== "" &&
+          options.some((o) => normalizeOption(o) === normalizeOption(storedCA));
+
+        let trueCorrectAnswer: string;
+        let trueCorrectIndex: number;
+
+        if (hasReliableCA) {
+          // ── CAMINHO RÁPIDO: dados do banco são confiáveis → zero chamadas de IA
+          trueCorrectIndex = options.findIndex(
+            (o) => normalizeOption(o) === normalizeOption(storedCA)
+          );
+          trueCorrectAnswer = options[trueCorrectIndex];
+        } else {
+          // ── CAMINHO DE AUTO-CORREÇÃO: tarefa antiga/corrompida
+          // A IA determina qual opção é gramaticalmente correta.
+          // O resultado é salvo no banco — próximas validações usam o caminho rápido.
+          const question = content.question ?? (taskContent as Record<string, unknown>).sentence_with_blank as string ?? "";
+
+          if (process.env.NODE_ENV === "development") {
+            console.log(`[validate] auto-corrigindo tarefa ${taskId}: correct_answer ausente ou inválido`);
+          }
+
+          const aiResult = await verifyWhichOptionIsCorrect(question, options);
+          trueCorrectIndex = aiResult.correct_index;
+          trueCorrectAnswer = aiResult.correct_answer;
+
+          // Persistir no banco (auto-healing — execução única por tarefa)
+          await supabase
+            .from("tasks")
+            .update({
+              content: {
+                ...taskContent,
+                correct_answer: trueCorrectAnswer,
+                correct_index: trueCorrectIndex,
+              },
+            })
+            .eq("id", taskId);
         }
 
-        // Comparação puramente determinística — sem chamar IA
-        correct = checkMultipleChoice(selectedOption, correctAnswer);
+        // ── Comparação determinística ─────────────────────────────────────────
+        correct = normalizeOption(selectedOption) === normalizeOption(trueCorrectAnswer);
+        correctIndex = trueCorrectIndex;
         score = correct ? 100 : 0;
-
-        // Encontrar o índice real da resposta correta para o frontend destacar
-        correctIndex = options.findIndex(
-          (o) => normalizeOption(o) === normalizeOption(correctAnswer)
-        );
-        if (correctIndex === -1) correctIndex = Number(content.correct_index) ?? 0;
-
-        const correctText = options[correctIndex] ?? correctAnswer;
         feedback = correct
           ? "Resposta certa! Excelente! 🎯"
-          : `Resposta incorreta. A correta era: "${correctText}"`;
+          : `Resposta incorreta. A correta era: "${trueCorrectAnswer}"`;
         explanation = content.explanation ?? "";
         break;
       }
@@ -134,24 +164,57 @@ export async function POST(req: NextRequest) {
       // ── Complete a Frase ─────────────────────────────────────────────────
       case "complete_frase": {
         const content = taskContent as CompleteFraseContent;
-        const correctAnswer = content.correct_answer ?? "";
-        const userAnswer = String(answer ?? "").trim();
+        const hasOptions = Array.isArray(content.options) && content.options.length > 0;
 
-        // Verificar se a resposta é uma opção válida
-        if (Array.isArray(content.options)) {
-          // Seleção de opção → comparar com correct_answer usando normalização
-          const matchResult = checkAnswer(userAnswer, [correctAnswer]);
-          correct = matchResult.match !== "none";
+        if (hasOptions) {
+          // Com opções → tratar como múltipla escolha (mesmo mecanismo de auto-correção)
+          const options = content.options as string[];
+          const selectedIdx = Number(answer);
+
+          if (!isNaN(selectedIdx) && selectedIdx >= 0 && selectedIdx < options.length) {
+            const selectedOption = options[selectedIdx];
+            const storedCA = content.correct_answer;
+            const hasReliableCA =
+              typeof storedCA === "string" &&
+              storedCA.trim() !== "" &&
+              options.some((o) => normalizeOption(o) === normalizeOption(storedCA));
+
+            let trueCorrectAnswer: string;
+            let trueCorrectIndex: number;
+
+            if (hasReliableCA) {
+              trueCorrectIndex = options.findIndex(
+                (o) => normalizeOption(o) === normalizeOption(storedCA)
+              );
+              trueCorrectAnswer = options[trueCorrectIndex];
+            } else {
+              const sentence = content.sentence_with_blank ?? content.full_sentence ?? "";
+              const aiResult = await verifyWhichOptionIsCorrect(sentence, options);
+              trueCorrectIndex = aiResult.correct_index;
+              trueCorrectAnswer = aiResult.correct_answer;
+              await supabase.from("tasks").update({
+                content: { ...taskContent, correct_answer: trueCorrectAnswer, correct_index: trueCorrectIndex }
+              }).eq("id", taskId);
+            }
+
+            correct = normalizeOption(selectedOption) === normalizeOption(trueCorrectAnswer);
+            correctIndex = trueCorrectIndex;
+            score = correct ? 100 : 0;
+            feedback = correct ? "Correto! ✅" : `Incorreto. A resposta era: "${trueCorrectAnswer}"`;
+          } else {
+            correct = false;
+            feedback = "Seleção inválida.";
+          }
         } else {
           // Resposta aberta
+          const correctAnswer = content.correct_answer ?? content.full_sentence ?? "";
+          const userAnswer = String(answer ?? "").trim();
           const matchResult = checkAnswer(userAnswer, [correctAnswer]);
           correct = matchResult.match !== "none";
+          score = correct ? matchResult.score : 0;
+          feedback = correct ? "Correto! Muito bem! ✅" : `Incorreto. A resposta era: "${correctAnswer}"`;
         }
 
-        score = correct ? 100 : 0;
-        feedback = correct
-          ? "Correto! Muito bem! ✅"
-          : `Incorreto. A resposta era: "${correctAnswer}"`;
         explanation = content.explanation ?? "";
         break;
       }
