@@ -36,8 +36,18 @@ export default function TarefasPage() {
     }
   }, [tasks, activeTasks]);
 
+  // Passa a tarefa explicitamente para evitar mismatch de índice:
+  // submitAnswer derivava a tarefa de tasks[currentTaskIndex] (store, array completo),
+  // mas a UI usa activeTasks[currentTaskIndex] (apenas pendentes).
+  // Após uma tarefa ser concluída, os arrays divergem e a validação usava a tarefa errada.
   async function handleSubmit(answer: unknown) {
-    return await submitAnswer(answer);
+    if (!currentTask) return null;
+    return await submitAnswer(answer, currentTask);
+  }
+
+  async function handleSkip() {
+    if (!currentTask) return;
+    await skipTask(currentTask);
   }
 
   function handleNext() {
@@ -155,7 +165,7 @@ export default function TarefasPage() {
               taskNumber={currentTaskIndex + 1}
               totalTasks={activeTasks.length}
               onSubmit={handleSubmit}
-              onSkip={skipTask}
+              onSkip={handleSkip}
               onNext={handleNext}
               isSubmitting={isSubmitting}
             />

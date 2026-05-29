@@ -10,7 +10,7 @@ import toast from "react-hot-toast";
 type TodayResponse = { tasks: Task[]; progress: TaskProgress[] };
 
 export function useTasks() {
-  const { tasks, setTasks, updateTaskStatus, advanceToNextTask, setGenerating, setSubmitting, currentTask } = useTasksStore();
+  const { tasks, setTasks, updateTaskStatus, advanceToNextTask, setGenerating, setSubmitting } = useTasksStore();
   const { addXP, incrementTasksCompleted } = useGamificationStore();
   const { profile } = useUserStore();
 
@@ -89,9 +89,12 @@ export function useTasks() {
     }
   }, [profile, setGenerating, loadTodayTasks]);
 
-  const submitAnswer = useCallback(async (answer: unknown) => {
-    const task = currentTask();
-    if (!task || !profile) return null;
+  // Recebe a tarefa explicitamente da UI para evitar o mismatch de índice entre
+  // tasks[] (store, não filtrado) e activeTasks[] (UI, filtrado por status).
+  // Bug: currentTask() do store usava tasks[currentTaskIndex] que aponta para a
+  // tarefa anterior quando alguma já foi concluída e o array foi filtrado na UI.
+  const submitAnswer = useCallback(async (answer: unknown, taskFromUI: Task) => {
+    if (!taskFromUI || !profile) return null;
 
     setSubmitting(true);
     try {
@@ -99,20 +102,19 @@ export function useTasks() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          taskId: task.id,
+          taskId: taskFromUI.id,
           userId: profile.id,
           answer,
-          taskType: task.type,
-          taskContent: task.content,
+          taskType: taskFromUI.type,
         }),
       });
 
       const result = await res.json();
 
       if (result.correct) {
-        addXP(result.xp_earned, `Tarefa concluída: ${task.title}`);
+        addXP(result.xp_earned, `Tarefa concluída: ${taskFromUI.title}`);
         incrementTasksCompleted();
-        updateTaskStatus(task.id, "concluida", result.xp_earned);
+        updateTaskStatus(taskFromUI.id, "concluida", result.xp_earned);
       }
 
       return result;
@@ -122,19 +124,16 @@ export function useTasks() {
     } finally {
       setSubmitting(false);
     }
-  }, [currentTask, profile, setSubmitting, addXP, incrementTasksCompleted, updateTaskStatus]);
+  }, [profile, setSubmitting, addXP, incrementTasksCompleted, updateTaskStatus]);
 
-  const skipTask = useCallback(async () => {
-    const task = currentTask();
-    if (!task) return;
-
-    updateTaskStatus(task.id, "pulada");
+  const skipTask = useCallback(async (taskFromUI: Task) => {
+    if (!taskFromUI) return;
+    updateTaskStatus(taskFromUI.id, "pulada");
     advanceToNextTask();
-  }, [currentTask, updateTaskStatus, advanceToNextTask]);
+  }, [updateTaskStatus, advanceToNextTask]);
 
   return {
     tasks,
-    currentTask: currentTask(),
     loadTodayTasks,
     generateTasks,
     submitAnswer,
